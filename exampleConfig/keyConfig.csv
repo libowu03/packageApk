@@ -1,0 +1,2 @@
+key,password,alias,default
+密钥文件名,密钥密码,密钥别名,是否是默认密钥（TRUE为默认密钥）

@@ -1,0 +1,9 @@
+<component name="ArtifactManager">
+  <artifact type="jar" build-on-make="true" name="packagedApkInfo:jar">
+    <output-path>$PROJECT_DIR$/out/artifacts/packagedApkInfo_jar</output-path>
+    <root id="archive" name="packagedApkInfo.jar">
+      <element id="module-output" name="packagedApkInfo" />
+      <element id="extracted-dir" path="$PROJECT_DIR$/libs/apktool.jar" path-in-jar="/" />
+    </root>
+  </artifact>
+</component>
