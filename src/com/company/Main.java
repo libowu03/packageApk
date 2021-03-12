@@ -22,8 +22,8 @@ public class Main {
     private static ExecutorService cachedThreadPool = Executors.newCachedThreadPool();
     //配置列表
     private static List<String[]> configList = new ArrayList<>();
-    //AndroidManifest文件的所有文本内容，包含了每一行内容
-    private static List<String> androidManifile = new ArrayList<>();
+    //AndroidManifest文件的所有文本内容，包含了每一行内容。key为线程名称
+    private static HashMap<String,List<String>> androidManifileMap = new HashMap();
     //csv第几列对应的标题
     private static HashMap<Integer, String> configTitleMap = new HashMap<>();
     //签名配置文件的标题
@@ -31,67 +31,105 @@ public class Main {
     //签名配置文件的具体内容
     private static HashMap<String, String> keyConfigMap = new HashMap<>();
     //反编译后临时数据存放地点
-    private static String outPath = "./tmp/out";
+    private static String outPath = "./tmp/";
     //目标apk存放路径
     private static String inputPath = "./apk";
     //打包进度
-    private static int progress = 0;
+    private volatile static int progress = -1;
     //是否需要复用上次反编译的文件
     private static boolean isNeedPreviousFile = false;
+    private static boolean onlySignApk = false;
     //开始时间
     private static long startTime;
+    //最大线程数量
+    private static int maxThreadNum = 5;
+    //已经完成的签名数量，这个签名完成数量是真正的完成数量，而progress只是执行数量，因为签名是另外新开线程执行的，所以progress与打包数量相同时不一定完成，而签名数量与打包数量相同时，则一定完成了所有任务
+    private volatile static int signNum = 0;
+
 
     public static void main(String[] args) {
         for (String item:args){
             if (item.equals("-n")){
                 isNeedPreviousFile = true;
+            }else if (item.equals("-s")){
+                onlySignApk = true;
             }
         }
         startTime = System.currentTimeMillis();
-        try {
-            System.out.println("必要文件检测......");
-            checkFiles();
-            writeExampleConfig();
-            System.out.println("必要文件检测完成");
 
-            System.out.println("读取配置文件中......");
-            readConfigFile();
-            System.out.println("读取配置文件完成！");
-            //检测签名配置文件是否正常
-            if (!checkKeyConfig()) {
-                System.exit(0);
-                return;
-            }
-            if (!isNeedPreviousFile){
-                System.out.println("执行反编译工作.........");
-                File out = new File(outPath);
-                File inputFile = readUserInputFile();
-                if (inputFile == null) {
-                    return;
-                }
-                //System.out.println("获取的目录为："+inputFile.getCanonicalPath());
-                ApkDecoder decoder = new ApkDecoder();
-                decoder.setOutDir(out);
-                decoder.setForceDelete(true);
-                decoder.setApkFile(inputFile);
-                decoder.decode();
-                System.out.println("反编译完成！");
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-            System.out.println("反编译失败！程序结束。" + e.getMessage());
+        System.out.println("必要文件检测......");
+        checkFiles();
+        writeExampleConfig();
+        System.out.println("必要文件检测完成");
+
+        System.out.println("读取配置文件中......");
+        readConfigFile();
+        System.out.println("读取配置文件完成！");
+
+        //检测签名配置文件是否正常
+        if (!checkKeyConfig()) {
             System.exit(0);
             return;
         }
 
-        System.out.println("读取AndroidManiFest.xml文件中......");
-        readAndroidManifile();
-        copySourceIcon();
-        System.out.println("读取AndroidManiFest.xml文件完成！");
+        if (onlySignApk){
+            File file = readUserInputFile();
+            if (file.getName().contains(" ")){
+                System.out.println("文件名称不允许存在空格符，已将文件名由"+file.getName()+"改为"+file.getName().replaceAll(" ",""));
+                file.renameTo(new File("./apk/"+file.getName().replaceAll(" ","")));
+            }
+            Utils.signApk("./apk/"+file.getName().replaceAll(" ",""),"./resultApk/"+file.getName().replaceAll(" ",""),keyConfigMap.get("key"),keyConfigMap.get("password"),keyConfigMap.get("alias"));
+            System.out.println("");
+            System.out.println("==================签名完成！==================");
+            System.exit(0);
+        }else {
+            //开启多条线程进行打包。线程数量为打包数量的1/3，超过最大线程则使用最大线程数量
+            int threadNum = configList.size()/3;
+            if (configList.size() < 5){
+                threadNum = 1;
+            }else {
+                if (threadNum > maxThreadNum){
+                    threadNum = maxThreadNum;
+                }
+            }
+            progress = threadNum-1;
+            for (int i=0;i < threadNum;i++){
+                addMission(i);
+            }
+        }
+    }
 
-        System.out.println("修改并生成新的apk中......");
-        makeNewAndroidManifest();
-        System.out.println("任务完成！");
+    private static void addMission(int threadNum){
+        cachedThreadPool.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (!isNeedPreviousFile){
+                        System.out.println("执行反编译工作.........");
+                        File out = new File(outPath+Thread.currentThread().getName());
+                        File inputFile = readUserInputFile();
+                        if (inputFile == null) {
+                            return;
+                        }
+                        //System.out.println("获取的目录为："+inputFile.getCanonicalPath());
+                        ApkDecoder decoder = new ApkDecoder();
+                        decoder.setOutDir(out);
+                        decoder.setForceDelete(true);
+                        decoder.setApkFile(inputFile);
+                        decoder.decode();
+                        System.out.println("反编译完成！");
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    System.out.println("反编译失败！程序结束。" + e.getMessage());
+                    System.exit(0);
+                    return;
+                }
+                readAndroidManifile();
+                copySourceIcon();
+                makeNewAndroidManifest(threadNum);
+            }
+        });
     }
 
     /**
@@ -130,14 +168,12 @@ public class Main {
     /**
      * 将原包中的图标文件拷贝一份到./ico/source下面去
      */
-    private static void copySourceIcon() {
+    private synchronized static void copySourceIcon() {
         try {
-            File resList = new File("./tmp/out/res");
+            File resList = new File("./tmp/"+Thread.currentThread().getName()+"/res");
             if (resList != null && resList.listFiles() != null) {
                 //进行icon的图片替换工作。这里对icon路径进行分析，判断icon在drawable目录还是mipmap目录,及获取icon文件的名称
                 final String[] icon = iconPath.split("/");
-                System.out.println(icon[0]);
-                System.out.println(icon[1]);
                 for (File file : resList.listFiles()) {
                     if (file.getName().startsWith(icon[0]) && !file.isFile()) {
                         File[] iconList = file.listFiles();
@@ -192,7 +228,7 @@ public class Main {
      */
     private static void copyIcon(String iconType, String iconName, String folder) {
         try {
-            FileInputStream fils = new FileInputStream((new File("./tmp/out/res/" + (iconType + "-" + folder + "") + "/" + iconName)).getCanonicalFile());
+            FileInputStream fils = new FileInputStream((new File("./tmp/"+Thread.currentThread().getName()+"/res/" + (iconType + "-" + folder + "") + "/" + iconName)).getCanonicalFile());
             FileOutputStream outs = new FileOutputStream((new File("./icon/source/" + folder + "/" + iconName)).getCanonicalFile());
             // 读取和写入信息
             int len = 0;
@@ -375,17 +411,22 @@ public class Main {
      */
     private static void readAndroidManifile() {
         try {
-            File file = new File("./tmp/out/AndroidManifest.xml").getCanonicalFile();
+            File file = new File("./tmp/"+Thread.currentThread().getName()+"/AndroidManifest.xml").getCanonicalFile();
             if (file == null) {
                 return;
             }
             BufferedReader bufferedReader = new BufferedReader(new FileReader(file));
+            if (androidManifileMap.get(Thread.currentThread().getName()) == null){
+                androidManifileMap.put(Thread.currentThread().getName(), new ArrayList<>());
+            }
             while (true) {
                 String line = bufferedReader.readLine();
                 if (line == null) {
                     break;
                 }
-                androidManifile.add(line);
+                List<String> list = androidManifileMap.get(Thread.currentThread().getName());
+                list.add(line);
+                androidManifileMap.put(Thread.currentThread().getName(), list);
                 //读取app的icon名称
                 if (line.trim().contains("<application") && line.contains("android:icon=")) {
                     String[] contentArray = line.split(" ");
@@ -525,148 +566,120 @@ public class Main {
     /**
      * 写入新的app名称
      */
-    public static void makeNewAndroidManifest() {
+    public static void makeNewAndroidManifest(int missionNumber) {
+        System.out.println("missionNumber的值为："+missionNumber);
         try {
             //读取配置列表
-            for (String[] item : configList) {
-                int configIndex = 0;
-                String tmpName = "";
-                String outputName = "";
-                for (String config : item) {
-                    ListIterator<String> iterator = androidManifile.listIterator();
-                    while (iterator.hasNext()) {
-                        String line = iterator.next();
-                        //System.out.println(configTitleMap.get(configIndex));
-                        if (configTitleMap.get(configIndex).equals("appName")) {
-                            if (config.isEmpty()) {
-                                continue;
+            int configIndex = 0;
+            String tmpName = "";
+            String outputName = "";
+            String[] item = configList.get(missionNumber);
+            for (String config : item) {
+                ListIterator<String> iterator = androidManifileMap.get(Thread.currentThread().getName()).listIterator();
+                while (iterator.hasNext()) {
+                    String line = iterator.next();
+                    //System.out.println(configTitleMap.get(configIndex));
+                    if (configTitleMap.get(configIndex).equals("appName")) {
+                        if (config.isEmpty()) {
+                            continue;
+                        }
+                        //System.out.println("进入名字修改环节");
+                        //这个表示需要修改app名称
+                        if (line.trim().contains("<application") && line.contains("android:label=")) {
+                            if (tmpName.isEmpty()) {
+                                tmpName = config + "_";
+                            } else {
+                                tmpName = tmpName + "_" + config;
                             }
-                            //System.out.println("进入名字修改环节");
-                            //这个表示需要修改app名称
-                            if (line.trim().contains("<application") && line.contains("android:label=")) {
-                                if (tmpName.isEmpty()) {
-                                    tmpName = config + "_";
-                                } else {
-                                    tmpName = tmpName + "_" + config;
+                            //替换apk包名
+                            String[] contentArray = line.split(" ");
+                            line = "";
+                            int index = 0;
+                            for (String contentItem : contentArray) {
+                                if (contentItem.startsWith("android:label=")) {
+                                    if (contentItem.endsWith(">")) {
+                                        contentArray[index] = "android:label=\"" + config + "\">";
+                                    } else {
+                                        contentArray[index] = "android:label=\"" + config + "\"";
+                                    }
                                 }
-                                //替换apk包名
-                                String[] contentArray = line.split(" ");
-                                line = "";
-                                int index = 0;
-                                for (String contentItem : contentArray) {
-                                    if (contentItem.startsWith("android:label=")) {
-                                        if (contentItem.endsWith(">")) {
-                                            contentArray[index] = "android:label=\"" + config + "\">";
-                                        } else {
-                                            contentArray[index] = "android:label=\"" + config + "\"";
-                                        }
-                                    }
-                                    if (index <= contentArray.length - 1) {
-                                        line = line + contentArray[index] + " ";
-                                    }
-                                    index++;
+                                if (index <= contentArray.length - 1) {
+                                    line = line + contentArray[index] + " ";
                                 }
-                                iterator.set(line);
+                                index++;
                             }
-                        } else if (configTitleMap.get(configIndex).equals("appIcon")) {
-                            //表示需要修改app的Ionc
-                            if (line.trim().contains("<application") && line.contains("android:icon=")) {
-                                makeNewAppIcon(config);
-                            }
-                        } else if (configTitleMap.get(configIndex).endsWith("outName")) {
-                            outputName = config;
-                        } else {
-                            //需要修改meta标签中的值
-                            if (line.trim().contains("android:name=\"" + configTitleMap.get(configIndex) + "\"")) {
-                                //替换apk包名
-                                String[] contentArray = line.split(" ");
-                                line = "";
-                                int index = 0;
-                                for (String contentItem : contentArray) {
-                                    if (contentItem.startsWith("android:value=")) {
-                                        contentArray[index] = "android:value=\"" + config + "\"/>";
-                                    }
-                                    if (index <= contentArray.length - 1) {
-                                        line = line + contentArray[index] + " ";
-                                    }
-                                    index++;
+                            iterator.set(line);
+                        }
+                    } else if (configTitleMap.get(configIndex).equals("appIcon")) {
+                        //表示需要修改app的Ionc
+                        if (line.trim().contains("<application") && line.contains("android:icon=")) {
+                            makeNewAppIcon(config);
+                        }
+                    } else if (configTitleMap.get(configIndex).endsWith("outName")) {
+                        outputName = config;
+                    } else {
+                        //需要修改meta标签中的值
+                        if (line.trim().contains("android:name=\"" + configTitleMap.get(configIndex) + "\"")) {
+                            //替换apk包名
+                            String[] contentArray = line.split(" ");
+                            line = "";
+                            int index = 0;
+                            for (String contentItem : contentArray) {
+                                if (contentItem.startsWith("android:value=")) {
+                                    contentArray[index] = "android:value=\"" + config + "\"/>";
                                 }
-                                iterator.set(line);
+                                if (index <= contentArray.length - 1) {
+                                    line = line + contentArray[index] + " ";
+                                }
+                                index++;
                             }
+                            iterator.set(line);
                         }
                     }
-                    configIndex++;
                 }
-                //生成新的AndroidManifest文件
-                writeNewAndroidManifest();
-                //重新打包生成apk
-                System.out.println("重新打包中......");
-                ApkOptions apkOptions = new ApkOptions();
-                String out = "./resultApk/" + tmpName + "_" + System.currentTimeMillis()+"_"+outputName+ ".apk";
-                //System.out.println(out);
-                new Androlib(apkOptions).build(new File(outPath), new File(out).getCanonicalFile());
-                System.out.println("打包完成！");
-                cachedThreadPool.execute(new Runnable() {
-                    @Override
-                    public void run() {
-                        signApk(out);
-                        System.out.println("完成进度：" + (progress) + "/" + configList.size());
-                        if (progress == configList.size()){
-                            long endTime = System.currentTimeMillis();
-                            System.out.println("总打包个数：" + configList.size() + ",打包总耗时：" + ((endTime - startTime) / 1000) + "秒");
-                            System.out.println("=================任务完成，程序结束===================");
-                            System.exit(0);
-                        }
+                configIndex++;
+            }
+            //生成新的AndroidManifest文件
+            writeNewAndroidManifest();
+            //重新打包生成apk
+            System.out.println("重新打包中......");
+            ApkOptions apkOptions = new ApkOptions();
+            String out = "./resultApk/" + tmpName + "_" + System.currentTimeMillis()+"_"+outputName+ ".apk";
+            //System.out.println(out);
+            new Androlib(apkOptions).build(new File(outPath+Thread.currentThread().getName()), new File(out).getCanonicalFile());
+            System.out.println("打包完成！");
+            cachedThreadPool.execute(new Runnable() {
+                @Override
+                public void run() {
+                    Utils.signApk(out,keyConfigMap.get("key"),keyConfigMap.get("password"),keyConfigMap.get("alias"));
+                    System.out.println("完成进度：" + (signNum) + "/" + configList.size());
+                    signNum++;
+                    if (signNum == configList.size()){
+                        long endTime = System.currentTimeMillis();
+                        System.out.println("总打包个数：" + configList.size() + ",打包总耗时：" + ((endTime - startTime) / 1000) + "秒");
+                        System.out.println("=================任务完成，程序结束===================");
+                        System.exit(0);
                     }
-                });
+                }
+            });
+            if (progress < configList.size()){
                 progress++;
+                //重新领取打包任务执行
+                makeNewAndroidManifest(progress);
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    /**
-     * 调用系统命令给apk进行签名
-     */
-    private static void signApk(String apkName) {
-        String keyPath = "./key/" + keyConfigMap.get("key");
-        String keyPwd = keyConfigMap.get("password");
-        String keyOtherName = keyConfigMap.get("alias");
-        String out = apkName.replace(".apk", "_out.apk");
-        //String cmd = "jarsigner -verbose -keystore 你的签名文件 -storepass 签名文件密码 -signedjar 签名后的apk名称 -digestalg SHA1 -sigalg MD5withRSA 待签名的apk  签名文件别名";
-        String cmd = "jarsigner -verbose -keystore " + keyPath + " -storepass " + keyPwd + " -signedjar " + out + " -digestalg SHA1 -sigalg MD5withRSA " + apkName + "  " + keyOtherName + "";
-        Runtime run = Runtime.getRuntime();//返回与当前 Java 应用程序相关的运行时对象
-        try {
-            Process p = run.exec(cmd);// 启动另一个进程来执行命令
-            BufferedInputStream in = new BufferedInputStream(p.getInputStream());
-            BufferedReader inBr = new BufferedReader(new InputStreamReader(in));
-            String lineStr;
-            while ((lineStr = inBr.readLine()) != null)
-                //获得命令执行后在控制台的输出信息
-                System.out.println(lineStr);// 打印输出信息
-            //检查命令是否执行失败。
-            if (p.waitFor() != 0) {
-                if (p.exitValue() == 1)//p.exitValue()==0表示正常结束，1：非正常结束
-                    System.err.println("命令签名失败!");
-            }
-            inBr.close();
-            in.close();
-            //删除掉未签名文件
-            File file = (new File(apkName)).getCanonicalFile();
-            file.delete();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
 
     /**
      * 生成新的AndroidManifest.xml文件
      */
     private static void writeNewAndroidManifest() {
         try {
-            BufferedWriter writer = new BufferedWriter(new FileWriter((new File("./tmp/out/AndroidManifest.xml")).getCanonicalFile()));
-            for (String line : androidManifile) {
+            BufferedWriter writer = new BufferedWriter(new FileWriter((new File("./tmp/"+Thread.currentThread().getName()+"/AndroidManifest.xml")).getCanonicalFile()));
+            for (String line : androidManifileMap.get(Thread.currentThread().getName())) {
                 writer.write(line);
                 writer.newLine();
             }
@@ -722,10 +735,10 @@ public class Main {
                     String[] iconName = fileMap.get(key).getName().split("\\.");
                     if (icon[0].equals("drawable")) {
                         //如果存在同名但不同后缀的原始图片，需要删除掉这些图片
-                        File webp = (new File("./tmp/out/res/drawable-" + key + "/" + icon[1] + ".webp")).getCanonicalFile();
-                        File jpg = (new File("./tmp/out/res/drawable-" + key + "/" + icon[1] + ".jpg")).getCanonicalFile();
-                        File jpeg = (new File("./tmp/out/res/drawable-" + key + "/" + icon[1] + ".jpeg")).getCanonicalFile();
-                        File png = (new File("./tmp/out/res/drawable-" + key + "/" + icon[1] + ".png")).getCanonicalFile();
+                        File webp = (new File("./tmp/"+Thread.currentThread().getName()+"/res/drawable-" + key + "/" + icon[1] + ".webp")).getCanonicalFile();
+                        File jpg = (new File("./tmp/"+Thread.currentThread().getName()+"/res/drawable-" + key + "/" + icon[1] + ".jpg")).getCanonicalFile();
+                        File jpeg = (new File("./tmp/"+Thread.currentThread().getName()+"/res/drawable-" + key + "/" + icon[1] + ".jpeg")).getCanonicalFile();
+                        File png = (new File("./tmp/"+Thread.currentThread().getName()+"/res/drawable-" + key + "/" + icon[1] + ".png")).getCanonicalFile();
                         if (webp.exists()) {
                             webp.delete();
                         }
@@ -738,7 +751,7 @@ public class Main {
                         if (png.exists()) {
                             png.delete();
                         }
-                        FileOutputStream out = new FileOutputStream((new File("./tmp/out/res/drawable-" + key + "/" + icon[1] + "." + iconName[1] + "")).getCanonicalFile());
+                        FileOutputStream out = new FileOutputStream((new File("./tmp/"+Thread.currentThread().getName()+"/res/drawable-" + key + "/" + icon[1] + "." + iconName[1] + "")).getCanonicalFile());
                         // 读取和写入信息
                         int len = 0;
                         while ((len = fils.read()) != -1) {
@@ -747,10 +760,10 @@ public class Main {
                         out.close();
                         fils.close();
                     } else {
-                        File webp = new File("./tmp/out/res/mipmap-" + key + "/" + icon[1] + ".webp").getCanonicalFile();
-                        File jpg = new File("./tmp/out/res/mipmap-" + key + "/" + icon[1] + ".jpg").getCanonicalFile();
-                        File jpeg = new File("./tmp/out/res/mipmap-" + key + "/" + icon[1] + ".jpeg").getCanonicalFile();
-                        File png = new File("./tmp/out/res/mipmap-" + key + "/" + icon[1] + ".png").getCanonicalFile();
+                        File webp = new File("./tmp/"+Thread.currentThread().getName()+"/res/mipmap-" + key + "/" + icon[1] + ".webp").getCanonicalFile();
+                        File jpg = new File("./tmp/"+Thread.currentThread().getName()+"/res/mipmap-" + key + "/" + icon[1] + ".jpg").getCanonicalFile();
+                        File jpeg = new File("./tmp/"+Thread.currentThread().getName()+"/res/mipmap-" + key + "/" + icon[1] + ".jpeg").getCanonicalFile();
+                        File png = new File("./tmp/"+Thread.currentThread().getName()+"/res/mipmap-" + key + "/" + icon[1] + ".png").getCanonicalFile();
                         if (webp.exists()) {
                             webp.delete();
                         }
@@ -763,7 +776,7 @@ public class Main {
                         if (png.exists()) {
                             png.delete();
                         }
-                        FileOutputStream out = new FileOutputStream("./tmp/out/res/mipmap-" + key + "/" + icon[1] + "." + iconName[1] + "");
+                        FileOutputStream out = new FileOutputStream("./tmp/"+Thread.currentThread().getName()+"/res/mipmap-" + key + "/" + icon[1] + "." + iconName[1] + "");
                         int len = 0;
                         while ((len = fils.read()) != -1) {
                             out.write(len);
