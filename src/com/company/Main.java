@@ -568,6 +568,9 @@ public class Main {
      */
     public static void makeNewAndroidManifest(int missionNumber) {
         System.out.println("missionNumber的值为："+missionNumber);
+        if (missionNumber > configList.size()-1){
+            return;
+        }
         try {
             //读取配置列表
             int configIndex = 0;
@@ -578,12 +581,10 @@ public class Main {
                 ListIterator<String> iterator = androidManifileMap.get(Thread.currentThread().getName()).listIterator();
                 while (iterator.hasNext()) {
                     String line = iterator.next();
-                    //System.out.println(configTitleMap.get(configIndex));
                     if (configTitleMap.get(configIndex).equals("appName")) {
                         if (config.isEmpty()) {
                             continue;
                         }
-                        //System.out.println("进入名字修改环节");
                         //这个表示需要修改app名称
                         if (line.trim().contains("<application") && line.contains("android:label=")) {
                             if (tmpName.isEmpty()) {
@@ -694,12 +695,10 @@ public class Main {
      * 替换app的icon
      */
     public static void makeNewAppIcon(String needIconName) {
-        //System.out.println("需要的图片名称:"+needIconName);
         try {
-            //System.out.println("图标名称：" + iconPath);
             //获取要修改的app图标
             File file = new File("./icon").getCanonicalFile();
-            if (needIconName.isEmpty()) {
+            if (needIconName == null || needIconName.isEmpty()) {
                 //如果配置文件中没有icon，则需要将之前拷贝的图片重新拷贝回来
                 file = new File("./icon/source").getCanonicalFile();
             }
@@ -713,13 +712,27 @@ public class Main {
                     File[] fileChilds = fileItem.listFiles();
                     //遍历dpi下的icon
                     for (File item : fileChilds) {
-                        if (item.isFile() && item.getName().equals(needIconName)) {
-                            //只允许png,webp,jpg,jpeg这几种格式，其他格式不被支持。只读取第一张图片。
-                            if (item.getName().endsWith(".png") || item.getName().endsWith(".webp")) {
-                                fileMap.put(fileItem.getName(), item);
-                            } else if (item.getName().endsWith("jpg") || item.getName().endsWith("jpeg")) {
-                                System.out.println("不建议使用jpg或jpeg格式图片");
-                                fileMap.put(fileItem.getName(), item);
+                        if (needIconName.isEmpty()){
+                            //如果needIconName是空的，表示需要使用原来的图标作为app的icon
+                            String name = item.getName().split("\\.",-1)[0];
+                            String sourceIconName = iconPath.split("/")[1];
+                            if (name.equals(sourceIconName)){
+                                if (item.getName().endsWith(".png") || item.getName().endsWith(".webp")) {
+                                    fileMap.put(fileItem.getName(), item);
+                                } else if (item.getName().endsWith("jpg") || item.getName().endsWith("jpeg")) {
+                                    //System.out.println("不建议使用jpg或jpeg格式图片");
+                                    fileMap.put(fileItem.getName(), item);
+                                }
+                            }
+                        }else {
+                            if (item.isFile() && item.getName().equals(needIconName)) {
+                                //只允许png,webp,jpg,jpeg这几种格式，其他格式不被支持。只读取第一张图片。
+                                if (item.getName().endsWith(".png") || item.getName().endsWith(".webp")) {
+                                    fileMap.put(fileItem.getName(), item);
+                                } else if (item.getName().endsWith("jpg") || item.getName().endsWith("jpeg")) {
+                                    //System.out.println("不建议使用jpg或jpeg格式图片");
+                                    fileMap.put(fileItem.getName(), item);
+                                }
                             }
                         }
                     }
