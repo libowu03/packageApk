@@ -1,3 +1,2 @@
 key,password,alias,default
-suanming.keystore,37418675,suanming.keystore,TRUE
-duliban.keystore,1989208,duliban.keystore,
+test.jks,123456789,test,TRUE
